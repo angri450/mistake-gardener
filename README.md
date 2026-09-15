@@ -1,8 +1,12 @@
 **English** | [中文](#中文说明)
 
+<img src="assets/icon-512.png" width="88" align="left" hspace="14" vspace="6" alt="Mistake Gardener">
+
 # 错题园丁 / Mistake Gardener
 
 > 会自己出题的英语打字陪练 — An English typing coach that writes its own drills from your mistakes.
+
+<img src="assets/cover-16x9.jpg" alt="封面:错题园丁,把每一次敲错长成下一轮要练的词库" width="100%">
 
 一个英语打字练习系统，加上一条由 AI agent 跑通的闭环：**把每一次敲错的原始按键流，变成下一轮要练的词库**。
 

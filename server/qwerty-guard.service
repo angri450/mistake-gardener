@@ -1,0 +1,7 @@
+[Unit]
+Description=qwerty 站点暴力破解防护(按 caddy 日志封禁来源 IP)
+After=network.target caddy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /root/qwerty-guard.py

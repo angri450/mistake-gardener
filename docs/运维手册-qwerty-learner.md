@@ -15,10 +15,11 @@
 1. 22: sshd(密码登录开启,历史遗留,本手册不涉及)。
 2. <peer-ssh-port>: 互联专用 sshd,仅密钥、禁 root,firewalld 仅放行对端 <peer-host>。不要动它。
 3. 8080: 用户访问口,属 caddy(TLS + basic_auth,账号 qwerty)。firewalld 放行 8080/tcp。本服务不得再直接占它。
-4. 8081: 本站真实监听端口(collector_server.py),**只绑 127.0.0.1**,firewalld 不放行。改回 0.0.0.0 等于绕过 caddy 把 /collect 裸奔上公网,禁止。
+4. 8505: 评委/访客入口(caddy,独立账号 judge,独立密码 <judge-password-file>)。与 owner 站完全隔离:错题数据落 collect-judge.jsonl,/collect.jsonl 对 judge 返回 403。赛后下线步骤见第 11 节。
+5. 8081: 本站真实监听端口(collector_server.py)
 5. 22716: octop——2026-09-14 已卸载退役,caddy 反代规则已摘,当前无监听;但 firewalld 里 22716/tcp 放行规则仍留着(未清),看到端口开着先查来源。
 6. 其他 caddy 口:8504(pi-web)、8517(CodeBuddy),与本项目无关,不要顺手改。
-7. 凭据:Caddyfile 内只存 bcrypt 哈希,明文口令在 <judge-or-owner-password-file>(0600)。不写进手册、不进任何仓库、不给对端。
+7. 凭据:Caddyfile 内只存 bcrypt 哈希,明文口令在 <owner-password-file>(0600)。不写进手册、不进任何仓库、不给对端。
 8. systemd 服务名: qwerty.service。本机 Agent 有 root;部署用户 agentxfer(uid 1001)无 sudo,服务以 agentxfer 身份运行。
 
 补充(2026-09-15 实测):端口归属以 `ss -tlnp` 为准,别信本手册旧节的 8080 字样——5.5 清单已按 8081/8080 双段改写。
@@ -71,7 +72,7 @@ async function N3(e){return await(await fetch("/qwerty-learner"+e)).json()}
 因此:
 1. 站点必须挂在 /qwerty-learner/ 子路径下(服务根 = qwerty-site,站点文件在其下 qwerty-learner/ 目录)。
 2. 词典索引里的 url 必须写成 "/dicts/xxx.json"(绝对路径),加载器会自动拼接前缀。不要改成相对路径。
-3. 浏览器访问地址: https://<your-host>:8080/qwerty-learner/ (带尾斜杠;是 https 不是 http,且先弹 HTTP 基本认证,账号 qwerty,口令向用户索取或读 <judge-or-owner-password-file>)。
+3. 浏览器访问地址: https://<your-host>:8080/qwerty-learner/ (带尾斜杠;是 https 不是 http,且先弹 HTTP 基本认证,账号 qwerty,口令向用户索取或读 <owner-password-file>)。
 4. 根路径 / 现在是 qwerty-site/index.html 的 meta refresh,自动跳到 /qwerty-learner/(不再是目录列表)。
 5. 证书由 acme 签发、profile shortlived、禁 TLS-ALPN 挑战,签发对象是 IP <your-host>;浏览器会报名称不匹配,手动继续即可。
 6. 80 端口上的请求被 caddy 永久跳转到 https://<your-host>:8504(pi-web),**不会**到打字练习;别指望从 http://<your-host>/ 进。
@@ -92,7 +93,7 @@ async function N3(e){return await(await fetch("/qwerty-learner"+e)).json()}
 curl -s -X POST http://127.0.0.1:8081/collect -d '{"selftest":true}'
 # 预期输出: {"ok": true, "stored": 1}
 # 走公网口则要带认证:
-PW=$(cat <judge-or-owner-password-file>)
+PW=$(cat <owner-password-file>)
 curl -sk -u "qwerty:$(printf %s "$PW" | tr -d '\n')" -H 'Host: <your-host>' \
   https://127.0.0.1:8080/collect -X POST -d '{"selftest":true}'
 ```
@@ -243,7 +244,7 @@ curl -s -o /dev/null -w 'mix      %{http_code} %{content_type}\n' -G 'http://127
 
 # D. 公网口鉴权(401 与 200 必须成对;只出 200 说明 basic_auth 掉了)
 curl -sk -o /dev/null -w 'noauth %{http_code}\n' -H 'Host: <your-host>' https://127.0.0.1:8080/qwerty-learner/   # 401
-PW=$(cat <judge-or-owner-password-file>)
+PW=$(cat <owner-password-file>)
 curl -sk -u "qwerty:$(printf %s "$PW" | tr -d '\n')" -o /dev/null -w 'auth   %{http_code}\n' -H 'Host: <your-host>' https://127.0.0.1:8080/qwerty-learner/   # 200
 # 反例:用 Host: 127.0.0.1 访问会因主机名不匹配落进默认站点,看着像 200 但 body 为空——测鉴权务必带对 Host
 
@@ -371,3 +372,14 @@ curl -sL -o gh-pages.tar.gz "https://ghfast.top/https://github.com/RealKai42/qwe
 8c. **由重放发现的口径错误(已修)**:生成端 /root/qwerty-dict-from-mistakes.py 原本按旧 mistakes 计密度与切片覆盖,里面还含着已被豁免的空格事件。现已改为"新判定下仍算错"的口径,分母换成必打字符数(去掉空格与标点)。重跑后切片覆盖数下降(如 To be 从 7 降到 0——它历史错全在空格上),错词本与句子库条数不变(6 与 12),length 仍同步。教训:改了判定必须同时改统计口径,否则生成端会继续为已经不存在的错误类型出题。
 
 9. **故意没做**:未改"打错一个字母就清空整条"的应用固有行为(长句仍然痛,但那是产品级改动,等用户点头);未新增"最小对比对"词库(bean/beam、cite/site 等,报告第 7.4 条已给清单,需 bundle 词典索引注入,单独一轮);未动 08-29 的三项旧补丁;未重启服务(静态改动不需要)。
+
+## 11. 2026-09-15 评委入口与暴力破解防护
+
+1. **两个入口,两套账号**:owner 走 8080(账号 qwerty,口令 <owner-password-file>);评委走 8505(账号 judge,口令 <judge-password-file>)。两者都是 caddy 的 basic_auth(bcrypt cost 14)。8505 站点带 request_body max_size 2MB。
+2. **数据物理隔离**:反代时 caddy 用 `header_up X-Collector-Tag <来源>` 标注来源(覆盖语义,客户端自带同名头会被替换,伪造无效)。collector_server.py 的 `_tag()` 只认 judge,其余一律当 owner:judge 的错题落 /home/agentxfer/collect-judge.jsonl,且 `GET /collect.jsonl` 对 judge 直接 403(那是 owner 的练习隐私)。错题词库生成脚本只读 collect.jsonl,所以评委的练习数据永远不会进 owner 的词库。
+3. **踩坑(Caddy header 顺序)**:如果同时写 `header_up -X-Collector-Tag`(删除)与 `header_up X-Collector-Tag owner`(设置),Caddy 会先 set 后 delete,把自己刚设的头删掉,上游完全收不到(实测探针只看到 Host 与 Authorization)。只写 set 即可,不要写删除。
+4. **防爆破**:本机没有 fail2ban(dnf 仓库里也没有),Caddy 2.10.2 无官方 rate_limit,所以用 caddy 访问日志驱动 firewalld:`/root/qwerty-guard.py` + `qwerty-guard.timer`(每 30 秒)。窗口 300s 内单 IP 在 8080/8505 累计 401 ≥ 8 次即封,首次 15 分钟,再犯翻倍(1h/6h),上限 24h,到期自动解封;loopback 与私网段不封(防自锁);窗口内全局 401 ≥ 200 只告警(分布式爆破靠单 IP 封禁解决不了)。日志 /root/qwerty-guard.log,状态 /root/qwerty-guard-state.json。
+5. **防护未在本机做的自测**:真实公网 IP 封禁没有现场验证——本机出口就是服务器自己的公网 IP,一旦封掉会切断自己的 SSH。封禁链路用 `python3 /root/qwerty-guard.py --simulate 203.0.113.9=9` 注入验证(实测 firewalld 出现 drop 规则,`--unblock` 可撤销)。
+6. **赛后下线评委入口**:把 Caddyfile 里 8505 整块删掉 -> `firewall-cmd --permanent --remove-port=8505/tcp && firewall-cmd --reload` -> `caddy reload`;再 `rm <judge-password-file> <judge-hash-file>`,并把 collect-judge.jsonl 归档或删除。
+7. **知乎 OAuth(待接入)**:开放平台地址 openapi.zhihu.com(authorize / access_token / user,Authorization Code Flow,1993 行文档已收)。前置是拿到 APP_ID/APP_KEY(邮件 product-platform@zhihu.com,主题 "<公司名称>申请接入知乎 oauth 服务",并提供 redirect_uri),拿到后在本服务加 /auth/zhihu/start 与 /auth/zhihu/callback 两个端点 + HttpOnly session cookie,与 basic_auth 并存(评委临时码仍然可用),并把错题来源标记从"站点"细化到"知乎 uid",让每个访客的词库各自独立。
+8. **本轮自我约束记录**:改 caddy 前备份 /root/Caddyfile.bak.<ts>;改服务端前备份 /root/collector_server.py.bak.<ts>;两处改动都先用 `caddy validate` / `py_compile` 校验再 reload/restart,并跑了行为验证(401/200、bucket 归属、403、伪造头)。

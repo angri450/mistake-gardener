@@ -1,0 +1,11 @@
+[Unit]
+Description=qwerty-guard 每 30 秒执行一次
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=30
+AccuracySec=5s
+Unit=qwerty-guard.service
+
+[Install]
+WantedBy=timers.target

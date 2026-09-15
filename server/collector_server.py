@@ -5,6 +5,7 @@ GET  静态文件（qwerty-site 目录）
 POST /collect  错题记录追加写入 collect.jsonl
 """
 import hashlib
+import base64
 import json
 import os
 import re
@@ -17,7 +18,33 @@ import wave
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = '/home/agentxfer/qwerty-site'
-COLLECT = '/home/agentxfer/collect.jsonl'
+COLLECT = '/home/agentxfer/collect.jsonl'          # owner(本人)的错题流水
+COLLECT_JUDGE = '/home/agentxfer/collect-judge.jsonl'  # 评委/访客的错题流水,与 owner 物理隔离
+
+
+def _tag(handler):
+    """请求来源:owner(本人)还是 judge(评委/访客)。
+
+    2026-09-15 起两个账号共用 8080 站点,basic_auth 已由 caddy 校验,所以这里读
+    caddy 转发下来的 Authorization 头,解出用户名即可分辨来源——不必把明文凭据写进 Caddyfile,
+    也不必为评委单开端口。安全前提:8081 只绑 127.0.0.1,外部进不来,这个头只可能来自 caddy。
+    客户端若自带 X-Collector-Tag,caddy 侧已用 header_up -X-Collector-Tag 删掉;
+    万一没删(例如日后改配置),这里也只在值恰为 judge/owner 时才采信,并优先按用户名判断。
+    """
+    a = handler.headers.get('Authorization') or ''
+    if a[:6].lower() == 'basic ':
+        try:
+            val = a.split(None, 1)[1].strip()
+            val += '=' * (-len(val) % 4)
+            raw = base64.b64decode(val).decode('utf-8', 'replace')
+            if raw.split(':', 1)[0].strip().lower() == 'judge':
+                return 'judge'
+        except Exception:
+            pass
+    t = (handler.headers.get('X-Collector-Tag') or '').strip().lower()
+    if t == 'judge':
+        return 'judge'
+    return 'owner'
 os.makedirs(ROOT, exist_ok=True)
 
 # --- TTS:短文本(<=YOUDAO_MAX 字符)302 代理 youdao,与单词朗读同音色;长文本走本地 Piper,磁盘缓存 ---
@@ -91,7 +118,14 @@ class H(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split('?')[0]
         if path in ('/collect', '/collect.jsonl'):
-            # 只读查看当前收集内容
+            # 只读查看当前收集内容;评委来源一律拒绝(那是 owner 的练习隐私)
+            if _tag(self) == 'judge':
+                self.send_response(403)
+                self._cors()
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(b'{"ok":false,"err":"forbidden"}')
+                return
             try:
                 data = open(COLLECT, 'rb').read()
             except FileNotFoundError:
@@ -203,14 +237,16 @@ class H(SimpleHTTPRequestHandler):
         try:
             data = json.loads(body)
             rows = data if isinstance(data, list) else [data]
-            with open(COLLECT, 'a', encoding='utf-8') as f:
+            tag = _tag(self)
+            target = COLLECT_JUDGE if tag == 'judge' else COLLECT
+            with open(target, 'a', encoding='utf-8') as f:
                 for r in rows:
                     f.write(json.dumps(r, ensure_ascii=False) + '\n')
             self.send_response(200)
             self._cors()
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({'ok': True, 'stored': len(rows)}).encode())
+            self.wfile.write(json.dumps({'ok': True, 'stored': len(rows), 'bucket': tag}).encode())
         except Exception as e:
             self.send_response(400)
             self._cors()

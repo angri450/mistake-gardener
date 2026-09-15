@@ -15,7 +15,8 @@
 1. 22: sshd(密码登录开启,历史遗留,本手册不涉及)。
 2. <peer-ssh-port>: 互联专用 sshd,仅密钥、禁 root,firewalld 仅放行对端 <peer-host>。不要动它。
 3. 8080: 用户访问口,属 caddy(TLS + basic_auth,账号 qwerty)。firewalld 放行 8080/tcp。本服务不得再直接占它。
-4. 8505: 评委/访客入口(caddy,独立账号 judge,独立密码 <judge-password-file>)。与 owner 站完全隔离:错题数据落 collect-judge.jsonl,/collect.jsonl 对 judge 返回 403。赛后下线步骤见第 11 节。
+4. 22716: 评委/访客入口(caddy,独立账号 judge,独立密码 <judge-password-file>)。**为什么不是 8505**:2026-09-15 实测腾讯云安全组只放行 80/8080/8504/8517/22716,8505 从公网 TCP 超时(check-host 四节点一致 + 本机 hairpin 对照);22716 是 Octop 退役后空出的已放行端口,直接征用,零控制台操作。探测方法见 server/qwerty-port-probe.py。与 owner 站完全隔离:错题数据落 collect-judge.jsonl,/collect.jsonl 对 judge 返回 403。赛后下线步骤见第 11 节。
+5. 8505: 预留给评委入口的备选端口,本机 firewalld 已放行、Caddyfile 里保留切换注释;若日后在安全组放行 8505(或 443,那样地址还能省掉端口号),把评委站点改回/改到那个端口即可。
 5. 8081: 本站真实监听端口(collector_server.py)
 5. 22716: octop——2026-09-14 已卸载退役,caddy 反代规则已摘,当前无监听;但 firewalld 里 22716/tcp 放行规则仍留着(未清),看到端口开着先查来源。
 6. 其他 caddy 口:8504(pi-web)、8517(CodeBuddy),与本项目无关,不要顺手改。
@@ -383,3 +384,11 @@ curl -sL -o gh-pages.tar.gz "https://ghfast.top/https://github.com/RealKai42/qwe
 6. **赛后下线评委入口**:把 Caddyfile 里 8505 整块删掉 -> `firewall-cmd --permanent --remove-port=8505/tcp && firewall-cmd --reload` -> `caddy reload`;再 `rm <judge-password-file> <judge-hash-file>`,并把 collect-judge.jsonl 归档或删除。
 7. **知乎 OAuth(待接入)**:开放平台地址 openapi.zhihu.com(authorize / access_token / user,Authorization Code Flow,1993 行文档已收)。前置是拿到 APP_ID/APP_KEY(邮件 product-platform@zhihu.com,主题 "<公司名称>申请接入知乎 oauth 服务",并提供 redirect_uri),拿到后在本服务加 /auth/zhihu/start 与 /auth/zhihu/callback 两个端点 + HttpOnly session cookie,与 basic_auth 并存(评委临时码仍然可用),并把错题来源标记从"站点"细化到"知乎 uid",让每个访客的词库各自独立。
 8. **本轮自我约束记录**:改 caddy 前备份 /root/Caddyfile.bak.<ts>;改服务端前备份 /root/collector_server.py.bak.<ts>;两处改动都先用 `caddy validate` / `py_compile` 校验再 reload/restart,并跑了行为验证(401/200、bucket 归属、403、伪造头)。
+
+### 11b. 端口可达性踩坑(2026-09-15)
+
+1. **症状**:评委入口配在 8505,Caddyfile 校验通过、firewalld `--list-ports` 有 8505、`ss` 显示 caddy 在听、回环访问 401/200 都对,但用户从浏览器打不开。
+2. **排查路径(可复用)**:先用本机 hairpin 对照——`curl https://<公网IP>:8080/` 返回 401 说明本机走公网 IP 这条路是通的,同一个写法打 8505 却是 000,差异就只在端口;再用 TCP 三态探测(`server/qwerty-port-probe.py`)区分"被安全组挡"与"本机没服务";最后用 check-host.net 的多节点 TCP 检查从外部复核(四节点一致超时=公网确实不通)。
+3. **根因**:云平台安全组是白名单模式,只有 80/8080/8504/8517/22716 放行;8505 是本轮新加的口,安全组里没有它。**本机 firewalld 与服务监听都正常不等于公网可达**——这道题要在云控制台的安全组上解。
+4. **处置**:把评委站点从 8505 换到 22716(Octop 退役后空出的已放行端口),零控制台操作即恢复;firewalld 里 8505 的放行保留着,方便日后切回;Caddyfile 里留了说明注释。
+5. **教训**:新开公网端口前,先跑一遍 qwerty-port-probe.py 看安全组放不放行,别等用户反馈"打不开";也不要假设"本机防火墙放行了就等于公网能用"。
